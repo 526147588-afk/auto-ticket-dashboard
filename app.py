@@ -59,9 +59,9 @@ else:
     html = html.replace("<body>", "<body>" + injection, 1)
 
 # ============== 5. 渲染（关键：st.components.v1.html 保真） ==============
-# height 设大点让整个看板完整展示，scrolling=True 允许内部滚动
+# height 给个足够大的值，scrolling=True 保险（内容再多也不截）
 # iframe 隔离环境，Streamlit 不会动里面的 CSS——1:1 复刻本地效果
-st.components.v1.html(html, height=4000, scrolling=True)
+st.components.v1.html(html, height=5000, scrolling=True)
 
 # ============== 6. 底部状态条（可选，方便排查） ==============
 try:
