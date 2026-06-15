@@ -60,9 +60,9 @@ else:
 
 # ============== 5. 渲染（关键：保真 + 撑满容器） ==============
 # 用 components.v1.html 保留 style/JS（st.html 会过滤 <style> 标签，CSS 全丢）
-# height=800 是初始值，dashboard_v5.html 末尾的 JS 会动态把 body 真实高度
-# postMessage 给 streamlit，iframe 高度自动跟随内容
-st.components.v1.html(html, height=800, scrolling=False)
+# height 给个够大的值（5000），scrolling=True 让内容超出时 iframe 内部出滚动条
+# （不靠 streamlit 主页面滚动，避免双滚动条冲突）
+st.components.v1.html(html, height=5000, scrolling=True)
 
 # ============== 6. 底部状态条（可选，方便排查） ==============
 try:
