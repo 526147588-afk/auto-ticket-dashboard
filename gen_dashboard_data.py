@@ -40,7 +40,150 @@ AIRLINE_NAME = {
     "AK": "亚航", "MF": "厦航", "HX": "港航", "VJ": "越捷",
     "FR": "瑞安", "5J": "宿务", "TR": "酷航", "JT": "狮航印尼",
     "PR": "菲航", "D7": "亚航X", "BX": "釜山", "7C": "济州",
+    "MM": "乐桃", "NH": "全日空", "JL": "日航", "TR": "酷航",
+    "KE": "大韩", "OZ": "韩亚", "TG": "泰航", "FD": "泰亚航",
+    "BE": "英伦", "BA": "英航", "AF": "法航", "LH": "汉莎",
+    "KL": "荷航", "EY": "阿提哈德", "EK": "阿联酋", "QR": "卡塔尔",
+    "SQ": "新航", "CX": "国泰", "BR": "长荣", "CI": "华航",
+    "CA": "国航", "CZ": "南航", "MU": "东航", "HU": "海航",
+    "FM": "上航", "ZH": "深航", "3U": "川航", "GS": "华夏",
 }
+
+
+# ============================================================
+# 第一次失败原因 - 数据清洗规则（v1，2026-06-17）
+# ============================================================
+# 1. A 路径订单（自动出票成功）不参与失败根因分析
+# 2. B/D 路径订单：优先用 第一次失败原因，fallback 到 失败原因
+# 3. 文本清洗：去邮箱/时间戳/订单号/null/技术字段/末尾 -xxx-xxx 模式
+# 4. 归一化：第N次取票失败 → 取票失败；反采同程ITravel → 反采同程
+# 5. 族聚合：按业务族归并（询价/亏损/取票/支付/平台状态/辅营/证件）
+# ============================================================
+
+# 文本清洗规则（按顺序：先去噪音，再归一化）
+REASON_CLEANUP_RULES = [
+    # 1) 去邮箱
+    (r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", ""),
+    # 2) 去时间戳 (2026-05-30 12:34:56 等)
+    (r"\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?", ""),
+    # 3) 去 10+ 位订单 ID
+    (r"\b\d{10,}\b", ""),
+    # 4) 去 trip_cid / user_id / order_id / null / undefined / NaN / nan
+    (r"(?:trip_cid|user_id|order_id|userid|orderid|ip_addr|request_id)[:\s]*", ""),
+    (r"\b(?:null|undefined|NaN|nan)\b", ""),
+    # 5) 去尾部 -xxx-xxx-xxx 模式（如 -null-null, -aabbcc）
+    (r"\s*-\s*[a-zA-Z0-9_-]+(?:\s*-\s*[a-zA-Z0-9_-]+)*\s*$", ""),
+    # 6) 去 {} 空括号
+    (r"\{\s*\}", ""),
+    # 7) 归一化：第N次取票失败 → 取票失败
+    (r"第\s*\d+\s*次取票失败", "取票失败"),
+    (r"第\s*null\s*次取票失败", "取票失败"),
+    # 8) 归一化：渠道差异（反采同程ITravel → 反采同程）
+    (r"反采同程\s*ITravel", "反采同程"),
+    (r"反采同程ITravel", "反采同程"),
+    # 9) 多个连续空格/标点压成一个
+    (r"[\s,，;；]+", " "),
+    # 10) 去首尾标点
+    (r"^[\s,，;：:]+|[\s,，;：:]+$", ""),
+]
+
+
+def clean_reason_text(reason: str) -> str:
+    """对单条 reason 文本应用清洗规则。返回清洗后文本；清洗后为空则返回空串。"""
+    if reason is None:
+        return ""
+    s = str(reason).strip()
+    if not s or s.lower() in ("nan", "none", "null", ""):
+        return ""
+    for pattern, replacement in REASON_CLEANUP_RULES:
+        s = re.sub(pattern, replacement, s)
+    s = s.strip()
+    return s
+
+
+def get_root_reason(row) -> str:
+    """获取清洗后的根因文本。
+
+    优先级：
+      1) 第一次失败原因 字段（清洗后）
+      2) fallback 到 失败原因 字段（清洗后）
+      3) 仍然为空 → 返回 ""
+    """
+    r1 = clean_reason_text(row.get("第一次失败原因", ""))
+    if r1:
+        return r1
+    r2 = clean_reason_text(row.get("失败原因", ""))
+    return r2
+
+
+# v10 族聚合规则（按出票环节划分 + 子分类）
+# 设计原则：失败根因按出票环节定位问题（预定/支付/取票/回填/验真/平台/人工/系统）
+# 命名规则：「环节 - 子分类」，子分类是开放扩展的
+# 注：清洗后的 reason 已经去掉了「第N次」前缀和" 渠道名"后缀，所以匹配主要看 reason 主体
+REASON_FAMILY_RULES = [
+    # === 人工环节（最优先，按 reason 主体关键字匹配） ===
+    (r"辅营", "人工环节-辅营订单"),
+    (r"重复订单", "人工环节-重复订单"),
+
+    # === 系统环节（横切关注点，任何环节超时都归这里）===
+    (r"订单处理超时", "系统环节-订单处理超时"),
+
+    # === 预定失败（细分：预定异常 / 未匹配自动规则 / 验价 / 询价 / 亏损）===
+    # 询价（询价失败 / 询价异常）— 已包含渠道前缀
+    (r"反采同程.*询价失败", "预定失败-询价失败-反采同程"),
+    (r"反采同程.*询价", "预定失败-询价异常-反采同程"),
+    (r"反采携程海外.*询价失败", "预定失败-询价失败-反采携程海外"),
+    (r"反采携程海外.*询价", "预定失败-询价异常-反采携程海外"),
+    (r"航班管家.*询价失败", "预定失败-询价失败-航班管家"),
+    (r"航班管家.*询价", "预定失败-询价异常-航班管家"),
+    (r".*询价失败", "预定失败-询价失败-其他渠道"),
+    # 政策亏损（保留渠道）
+    (r"反采同程.*亏损大于", "预定失败-亏损过大-反采同程"),
+    (r"反采携程海外.*亏损大于", "预定失败-亏损过大-反采携程海外"),
+    (r"反采同程.*亏损", "预定失败-政策亏损-反采同程"),
+    (r"反采携程海外.*亏损", "预定失败-政策亏损-反采携程海外"),
+    (r".*亏损大于", "预定失败-亏损过大-其他渠道"),
+    # 验价失败
+    (r"验价失败", "预定失败-验价失败"),
+    # 未匹配自动规则
+    (r"未匹配自动规则", "预定失败-未匹配自动规则"),
+    # 预定失败-其他（兜底型预定失败，预约异常/系统忙等）
+    (r"预定失败", "预定失败-预定异常"),
+
+    # === 支付失败（细分：通用支付失败 / 订单校验失败）===
+    (r"订单校验失败", "支付失败-订单校验失败"),
+    (r"支付失败", "支付失败-支付异常"),
+
+    # === 取票失败（细分：通用取票失败，留扩展位）===
+    (r"取票失败", "取票失败-取票异常"),
+
+    # === 验真失败（细分：异常/失败，留扩展位）===
+    (r"验真异常", "验真失败-验真异常"),
+    (r"验真失败", "验真失败-验真失败"),
+
+    # === 回填失败（主动回填动作失败）===
+    (r"回填原平台失败", "回填失败-主动回填"),
+    (r"回填失败", "回填失败-主动回填"),
+
+    # === 平台失败（回填成功后，下一步操作/监测）===
+    # 出票费审核失败（回填成功后的下一步操作）
+    (r"出票费审核失败", "平台失败-出票费审核"),
+    # 原平台状态监测（监测动作发现问题）
+    (r"原平台状态监测", "平台失败-状态监测"),
+    (r"原平台状态", "平台失败-状态监测"),
+]
+
+
+def family_reason(reason: str) -> str:
+    """v10：把单条清洗后的 reason 归到「环节 - 子分类」。
+    如果没有任何规则匹配，返回 '其他失败-兜底'。"""
+    if not reason:
+        return "其他失败-空原因"
+    for pattern, family in REASON_FAMILY_RULES:
+        if re.search(pattern, reason):
+            return family
+    return "其他失败-兜底"
+    return reason  # 兜底：保留清洗后的原文
 
 
 def load_all():
@@ -403,32 +546,157 @@ def build_month_data(df, month_label):
     out["staff"] = staff
 
     # ========== 8. 失败原因（路径B + 路径D 合并） ==========
-    # v5 更新：用「第一次失败原因」字段（根因分析视角），fallback 到 失败原因
+    # v6 更新（2026-06-17）：
+    #   1) A 路径订单不参与失败根因分析（它们没失败）
+    #   2) B/D 路径：先 第一次失败原因，fallback 到 失败原因
+    #   3) 应用文本清洗规则（去邮箱/时间戳/订单号/null/技术字段）
+    #   4) 族聚合：把相似根因归到业务族（"取票失败"/"询价失败"/"亏损"等）
     fail_reasons_b = Counter()
     fail_reasons_d = Counter()
+    # 族级聚合（B/D 分别）
+    fail_families_b = Counter()
+    fail_families_d = Counter()
     for _, r in df.iterrows():
         p = r["path"]
-        reason = str(r.get("第一次失败原因", "") or r.get("失败原因", "") or "").strip()
-        if not reason:
-            reason = "(无)"
+        # A 路径不参与失败根因分析
+        if p == "A":
+            continue
+        # 清洗 + fallback
+        cleaned = get_root_reason(r)
+        if not cleaned:
+            cleaned = "(无)"  # 真没原因（B/D 路径才会到这里）
         if p == "B":
-            fail_reasons_b[reason] += 1
+            fail_reasons_b[cleaned] += 1
+            fam = family_reason(cleaned) or "(无)"
+            fail_families_b[fam] += 1
         elif p == "D":
-            fail_reasons_d[reason] += 1
+            fail_reasons_d[cleaned] += 1
+            fam = family_reason(cleaned) or "(无)"
+            fail_families_d[fam] += 1
 
     # 简化：取前 60 字
     def short(s, n=60):
         s = s.replace("\n", " ").replace("\r", " ")
         return s[:n] + ("..." if len(s) > n else "")
 
+    # v6 修复：fail_reasons 改为全量（之前 .most_common(30) 截断导致族级数据不一致）
     out["fail_reasons_B"] = [
-        {"reason": short(k, 80), "full": short(k, 200), "count": v}
-        for k, v in fail_reasons_b.most_common(30)
+        {"reason": short(k, 80), "full": k, "count": v}
+        for k, v in fail_reasons_b.most_common()  # 全量
     ]
     out["fail_reasons_D"] = [
-        {"reason": short(k, 80), "full": short(k, 200), "count": v}
-        for k, v in fail_reasons_d.most_common(30)
+        {"reason": short(k, 80), "full": k, "count": v}
+        for k, v in fail_reasons_d.most_common()  # 全量
     ]
+    # 族级 Top（看板默认展示，Top 15 足够，前端限制显示 Top 10）
+    out["fail_families_B"] = [
+        {"family": k, "count": v}
+        for k, v in fail_families_b.most_common()
+    ]
+    out["fail_families_D"] = [
+        {"family": k, "count": v}
+        for k, v in fail_families_d.most_common()
+    ]
+
+    # ========== Top 10 失败根因下钻数据（5 维度）==========
+    # 为 Top 10 根因预计算：平台分布 / 航司分布 / 航司×平台交叉 / 日期趋势 / 员工救场
+    # 用 groupby 按 reason 一次性 group 出所有数据，避免再二次匹配
+    def build_drilldown(target_path, top_n=10):
+        """为 Top N 失败根因生成 5 维度下钻数据。
+
+        不用 reason_counter 二次匹配（可能因 strip/类型问题导致 0 匹配），
+        直接从 df 拿该 path 的所有订单，groupby("第一次失败原因") 后
+        按 counter 排序取 Top N。
+        """
+        # 该路径的所有订单
+        path_df = df[df["path"] == target_path].copy()
+        if path_df.empty:
+            return []
+        # 计算每个 reason 的 count
+        reason_full = path_df["第一次失败原因"].fillna("").astype(str).str.strip()
+        reason_full_nonempty = reason_full[reason_full != ""]
+        cnt = reason_full_nonempty.value_counts().head(top_n)
+        drills = []
+        for reason_text, top_count in cnt.items():
+            # 用 numpy 数组按位置匹配（避免索引对齐问题）
+            sub = path_df[reason_full == reason_text]
+            n_sub = len(sub)
+            if n_sub == 0:
+                # fallback：substring 匹配
+                sub = path_df[reason_full.str.contains(reason_text, regex=False, na=False)]
+                n_sub = len(sub)
+            if n_sub == 0:
+                continue
+
+            # 1. 平台分布
+            plat_dist = sub["平台"].value_counts().head(10)
+            platform_dist = [{"name": k, "count": int(v)} for k, v in plat_dist.items()]
+
+            # 2. 航司分布（注意：真正的航司代码在"航空公司列表"列，"航司编码信息"是乘客名）
+            # "航空公司列表"是逗号分隔的字符串（如 "9C, HO"），需要 explode 拆分
+            air_col = "航空公司列表" if "航空公司列表" in sub.columns else ("航司编码信息" if "航司编码信息" in sub.columns else "航司")
+            # 拆分多航司 + 统计
+            air_exploded = sub[air_col].fillna("").astype(str).str.strip()
+            air_exploded = air_exploded[air_exploded != ""].str.split(r"[,,;；\s]+", regex=True).explode()
+            air_exploded = air_exploded[air_exploded.str.strip() != ""]
+            air_dist = air_exploded.value_counts().head(10)
+            airline_dist = []
+            for k, v in air_dist.items():
+                k_str = str(k).strip()
+                cn = AIRLINE_NAME.get(k_str, k_str)
+                airline_dist.append({"code": k_str, "name": cn, "count": int(v)})
+
+            # 3. 航司 × 平台 交叉（同样需要拆分多航司）
+            cross_dict = {}
+            for _, r in sub.iterrows():
+                air_raw = str(r.get(air_col, "")).strip()
+                if not air_raw:
+                    air_list = ["未识别"]
+                else:
+                    air_list = [a.strip() for a in re.split(r"[,,;；\s]+", air_raw) if a.strip()]
+                    if not air_list:
+                        air_list = ["未识别"]
+                plat = str(r.get("平台", "")).strip() or "未识别"
+                for air in air_list:
+                    air_cn = AIRLINE_NAME.get(air, air)
+                    key = (air_cn, plat)
+                    cross_dict[key] = cross_dict.get(key, 0) + 1
+            airlines_set = sorted({k[0] for k in cross_dict.keys()})
+            platforms_set = sorted({k[1] for k in cross_dict.keys()})
+            cross = {
+                "airlines": airlines_set,
+                "platforms": platforms_set,
+                "data": [[cross_dict.get((a, p), 0) for p in platforms_set] for a in airlines_set],
+            }
+
+            # 4. 日期趋势
+            daily_count = sub["_file_date"].value_counts().sort_index()
+            date_trend = [{"date": str(d), "count": int(c)} for d, c in daily_count.items()]
+
+            # 5. 员工救场
+            staff_series = sub["最后锁定人"].fillna("").astype(str).str.strip()
+            staff_series = staff_series[staff_series != ""]
+            staff_counts = staff_series.value_counts().head(10)
+            staff_dist = [{"name": k, "count": int(v)} for k, v in staff_counts.items()]
+            rescued_count = int(staff_series.shape[0])
+            rescue_rate = round(rescued_count / n_sub * 100, 2) if n_sub else 0
+
+            drills.append({
+                "reason": short(reason_text, 80),
+                "total": int(n_sub),
+                "top_count": int(top_count),
+                "platform_dist": platform_dist,
+                "airline_dist": airline_dist,
+                "cross": cross,
+                "date_trend": date_trend,
+                "staff_dist": staff_dist,
+                "rescued_count": rescued_count,
+                "rescue_rate": rescue_rate,
+            })
+        return drills
+
+    out["fail_drill_B"] = build_drilldown("B", top_n=10)
+    out["fail_drill_D"] = build_drilldown("D", top_n=10)
 
     # ========== 8.5 流程归因（v4 定版）==========
     # 阶段分布、子类分布、每日阶段堆叠
@@ -639,7 +907,10 @@ def main():
 
     # ========== 写入 ==========
     out_path = os.path.join(OUT_DIR, "dashboard_data.json")
+    from datetime import datetime, timezone, timedelta
+    bj_tz = timezone(timedelta(hours=8))
     final = {
+        "generated_at": datetime.now(bj_tz).strftime("%Y-%m-%d %H:%M:%S"),
         "available_months": available_months,
         "current_month": target_months[-1],  # 默认显示最后（最新）月
         "months": months_data,
