@@ -193,6 +193,22 @@
     border-collapse: collapse;
     font-size: 12px;
   }
+  /* 失败根因下钻面板 */
+  .drill-row { background: #0a1424; }
+  .drill-row:hover { background: #0a1424; }
+  .drill-panel { padding: 12px 18px; background: #0a1424; border-left: 3px solid #00e5ff; }
+  .drill-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .drill-title { font-size: 14px; font-weight: 600; }
+  .drill-close { background: transparent; border: 1px solid #2a4a6e; color: #b0c4de; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .drill-close:hover { background: #1e3a5f; color: #fff; }
+  .drill-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .drill-chart { background: #0a1a2e; border: 1px solid #1e3a5f; border-radius: 6px; padding: 10px; }
+  .drill-wide { grid-column: 1 / -1; }
+  .drill-chart-title { color: #00e5ff; font-size: 12px; font-weight: 600; margin-bottom: 8px; padding-left: 4px; border-left: 2px solid #00e5ff; }
+  .family-subtable { margin-top: 8px; }
+  .family-subtable .data-table { font-size: 11px; }
+  .drill-btn { background: #0a1a2e; border: 1px solid #1e3a5f; color: #00e5ff; padding: 2px 8px; border-radius: 3px; cursor: pointer; font-size: 11px; }
+  .drill-btn:hover { background: #1e3a5f; color: #fff; }
   .data-table th {
     text-align: left;
     padding: 8px 10px;
@@ -1624,14 +1640,101 @@ function stageIcon(stage) {
 
 /* ============== 页面：失败根因 ============== */
 function renderFail() {
-  const bReasons = CURRENT_DATA.fail_reasons_B.slice(0, 20);
-  const dReasons = CURRENT_DATA.fail_reasons_D.slice(0, 15);
+  // v10 更新：按出票环节划分（8 大环节 + 子分类）
+  // - 第一级：族级 Top 30（按环节色编码）
+  // - 上方：环节汇总条（一眼可辨哪一环出问题）
+  // - 点击族 → 展开二级：原始 Top 5（清洗后但未族聚合的）
+  // - 二级点击 → 5 维度下钻（沿用 toggleDrill）
+  const bFamilies = (CURRENT_DATA.fail_families_B || []).slice(0, 30);
+  const dFamilies = (CURRENT_DATA.fail_families_D || []).slice(0, 30);
+  const bReasonsAll = CURRENT_DATA.fail_reasons_B.slice(0, 30);
+  const dReasonsAll = CURRENT_DATA.fail_reasons_D.slice(0, 30);
   const cs = COMPARE_DATA;
   const cmpBMap = {};
   const cmpDMap = {};
   if (cs) {
     (cs.fail_reasons_B || []).forEach(r => { cmpBMap[r.full] = r; });
     (cs.fail_reasons_D || []).forEach(r => { cmpDMap[r.full] = r; });
+  }
+  // 族级对比 map
+  const cmpBFamMap = {};
+  const cmpDFamMap = {};
+  if (cs) {
+    (cs.fail_families_B || []).forEach(f => { cmpBFamMap[f.family] = f; });
+    (cs.fail_families_D || []).forEach(f => { cmpDFamMap[f.family] = f; });
+  }
+
+  // v10：匹配一个 reason 属于哪个环节（按出票环节划分，与后端 REASON_FAMILY_RULES 对齐）
+  function getFamily(reason) {
+    if (!reason) return "其他失败-空原因";
+    const rules = [
+      [/辅营/, "人工环节-辅营订单"],
+      [/重复订单/, "人工环节-重复订单"],
+      [/订单处理超时/, "系统环节-订单处理超时"],
+      [/反采同程.*询价失败/, "预定失败-询价失败-反采同程"],
+      [/反采同程.*询价/, "预定失败-询价异常-反采同程"],
+      [/反采携程海外.*询价失败/, "预定失败-询价失败-反采携程海外"],
+      [/反采携程海外.*询价/, "预定失败-询价异常-反采携程海外"],
+      [/航班管家.*询价失败/, "预定失败-询价失败-航班管家"],
+      [/航班管家.*询价/, "预定失败-询价异常-航班管家"],
+      [/.*询价失败/, "预定失败-询价失败-其他渠道"],
+      [/反采同程.*亏损大于/, "预定失败-亏损过大-反采同程"],
+      [/反采携程海外.*亏损大于/, "预定失败-亏损过大-反采携程海外"],
+      [/反采同程.*亏损/, "预定失败-政策亏损-反采同程"],
+      [/反采携程海外.*亏损/, "预定失败-政策亏损-反采携程海外"],
+      [/.*亏损大于/, "预定失败-亏损过大-其他渠道"],
+      [/验价失败/, "预定失败-验价失败"],
+      [/未匹配自动规则/, "预定失败-未匹配自动规则"],
+      [/预定失败/, "预定失败-预定异常"],
+      [/订单校验失败/, "支付失败-订单校验失败"],
+      [/支付失败/, "支付失败-支付异常"],
+      [/取票失败/, "取票失败-取票异常"],
+      [/验真异常/, "验真失败-验真异常"],
+      [/验真失败/, "验真失败-验真失败"],
+      [/回填原平台失败/, "回填失败-主动回填"],
+      [/回填失败/, "回填失败-主动回填"],
+      [/出票费审核失败/, "平台失败-出票费审核"],
+      [/原平台状态监测/, "平台失败-状态监测"],
+      [/原平台状态/, "平台失败-状态监测"],
+    ];
+    for (const [re, fam] of rules) {
+      if (re.test(reason)) return fam;
+    }
+    return "其他失败-兜底";
+  }
+
+  // v10：环节颜色映射（一眼可辨哪一环出问题了）
+  function getStageColor(famName) {
+    if (!famName) return "#7a8ba0";
+    if (famName.startsWith("人工环节")) return "#ff6b9d";        // 粉红
+    if (famName.startsWith("系统环节")) return "#ffd93d";        // 金黄
+    if (famName.startsWith("预定失败")) return "#ff4757";        // 红色（高频）
+    if (famName.startsWith("支付失败")) return "#ff6348";        // 橙红
+    if (famName.startsWith("取票失败")) return "#ffa502";        // 橙色
+    if (famName.startsWith("验真失败")) return "#9c88ff";        // 紫色
+    if (famName.startsWith("回填失败")) return "#70a1ff";        // 蓝色
+    if (famName.startsWith("平台失败")) return "#5f27cd";        // 深紫
+    if (famName.startsWith("其他失败")) return "#7a8ba0";        // 灰色
+    return "#00e5ff";
+  }
+
+  // v10：环节分组（按 8 大环节分组聚合）
+  function groupByStage(families) {
+    const STAGE_ORDER = [
+      "人工环节", "系统环节", "预定失败", "支付失败",
+      "取票失败", "验真失败", "回填失败", "平台失败", "其他失败"
+    ];
+    const stageMap = {};
+    STAGE_ORDER.forEach(s => stageMap[s] = 0);
+    families.forEach(f => {
+      const stage = (f.family || "").split("-")[0];
+      if (stageMap[stage] === undefined) stageMap["其他失败"] += f.count;
+      else stageMap[stage] += f.count;
+    });
+    return STAGE_ORDER
+      .map(s => ({ stage: s, count: stageMap[s] }))
+      .filter(x => x.count > 0)
+      .sort((a, b) => b.count - a.count);
   }
 
   // B 路径 KPI 条对比
@@ -1642,28 +1745,74 @@ function renderFail() {
     ? `<span class="badge badge-info" style="background:#1e3a5f">对比 ${COMPARE_LABEL}：D ${fmt.num(cs.summary.D)} 单</span>`
     : "";
 
-  // 表格行生成器：加 vs 对比列
-  const bRow = (r, i) => {
+  // === 族级行（第一级，按环节色编码）===
+  const bFamilyRow = (f, i) => {
+    const cmp = cmpBFamMap[f.family];
+    const cmpBadge = cs
+      ? (cmp ? fmt.cmp(f.count - cmp.count, cmp.count, "amount", false) : `<span style="color:#7a8ba0">新增</span>`)
+      : "—";
+    const stageColor = getStageColor(f.family);
+    return `<tr onclick="toggleFamilyDrill('B', ${i}, this)" style="cursor:pointer" data-fam-idx="${i}">
+      <td>${i + 1}</td>
+      <td><span style="display:inline-block;width:10px;height:10px;background:${stageColor};border-radius:2px;margin-right:6px"></span><span style="color:#00e5ff">▸ </span><strong>${escapeHtml(f.family)}</strong></td>
+      <td>${fmt.num(f.count)}</td>
+      <td>${fmt.pct(f.count / CURRENT_DATA.summary.B * 100)}</td>
+      <td style="font-size:11px">${cmpBadge}</td>
+    </tr>`;
+  };
+  const dFamilyRow = (f, i) => {
+    const cmp = cmpDFamMap[f.family];
+    const cmpBadge = cs
+      ? (cmp ? fmt.cmp(f.count - cmp.count, cmp.count, "amount", false) : `<span style="color:#7a8ba0">新增</span>`)
+      : "—";
+    const stageColor = getStageColor(f.family);
+    return `<tr onclick="toggleFamilyDrill('D', ${i}, this)" style="cursor:pointer" data-fam-idx="${i}">
+      <td>${i + 1}</td>
+      <td><span style="display:inline-block;width:10px;height:10px;background:${stageColor};border-radius:2px;margin-right:6px"></span><span style="color:#00e5ff">▸ </span><strong>${escapeHtml(f.family)}</strong></td>
+      <td>${fmt.num(f.count)}</td>
+      <td>${fmt.pct(f.count / CURRENT_DATA.summary.D * 100)}</td>
+      <td style="font-size:11px">${cmpBadge}</td>
+    </tr>`;
+  };
+
+  // === v10：环节汇总条（B/D 各 1 行，紧贴在族级表上方）===
+  const bStages = groupByStage(CURRENT_DATA.fail_families_B || []);
+  const dStages = groupByStage(CURRENT_DATA.fail_families_D || []);
+  const stageSummaryHtml = (stages, path, total) => {
+    if (!stages.length) return "";
+    const cells = stages.map(s => {
+      const color = getStageColor(s.stage + "-x");  // 取色用 stage 名
+      return `<div style="flex:1;min-width:90px;background:#0a1929;border-left:3px solid ${color};padding:8px 10px;margin-right:6px;border-radius:3px">
+        <div style="font-size:11px;color:#7a8ba0">${escapeHtml(s.stage)}</div>
+        <div style="font-size:18px;font-weight:bold;color:${color}">${fmt.num(s.count)}</div>
+        <div style="font-size:10px;color:#7a8ba0">${fmt.pct(s.count / total * 100)}</div>
+      </div>`;
+    }).join("");
+    return `<div style="display:flex;flex-wrap:wrap;margin-bottom:12px">${cells}</div>`;
+  };
+
+  // === 原始行（清洗后，第二级展开时用）===
+  const bReasonRow = (r, i, famName) => {
     const cmp = cmpBMap[r.full];
     const cmpBadge = cs
       ? (cmp ? fmt.cmp(r.count - cmp.count, cmp.count, "amount", false) : `<span style="color:#7a8ba0">新增</span>`)
       : "—";
-    return `<tr>
+    return `<tr onclick="toggleDrill('B', ${i}, this)" style="cursor:pointer" data-idx="${i}">
       <td>${i + 1}</td>
-      <td title="${r.full}">${r.reason}</td>
+      <td title="${escapeHtml(r.full)}"><span style="color:#00e5ff">▸ </span>${escapeHtml(r.reason)}</td>
       <td>${fmt.num(r.count)}</td>
       <td>${fmt.pct(r.count / CURRENT_DATA.summary.B * 100)}</td>
       <td style="font-size:11px">${cmpBadge}</td>
     </tr>`;
   };
-  const dRow = (r, i) => {
+  const dReasonRow = (r, i) => {
     const cmp = cmpDMap[r.full];
     const cmpBadge = cs
       ? (cmp ? fmt.cmp(r.count - cmp.count, cmp.count, "amount", false) : `<span style="color:#7a8ba0">新增</span>`)
       : "—";
-    return `<tr>
+    return `<tr onclick="toggleDrill('D', ${i}, this)" style="cursor:pointer" data-idx="${i}">
       <td>${i + 1}</td>
-      <td title="${r.full}">${r.reason}</td>
+      <td title="${escapeHtml(r.full)}"><span style="color:#00e5ff">▸ </span>${escapeHtml(r.reason)}</td>
       <td>${fmt.num(r.count)}</td>
       <td>${fmt.pct(r.count / CURRENT_DATA.summary.D * 100)}</td>
       <td style="font-size:11px">${cmpBadge}</td>
@@ -1672,40 +1821,44 @@ function renderFail() {
 
   const html = `
     <div class="section">
-      <div class="section-title">⚠️ B 路径失败原因（自动失败被人工救场 · ${fmt.num(CURRENT_DATA.summary.B)} 单）
-        <span class="badge badge-warn">最常失败的环节</span>
+      <div class="section-title">⚠️ B 路径失败根因（按出票环节 · ${fmt.num(CURRENT_DATA.summary.B)} 单）
+        <span class="badge badge-warn">点击族名展开原始 Top 5</span>
         ${cmpBHdr}
       </div>
-      <div id="chart-failB" class="chart-area" style="height:600px"></div>
       <div class="chart-box" style="margin-top:14px">
-        <div class="chart-title">📋 B 路径 Top 20 失败原因</div>
-        <div style="max-height: 500px; overflow-y: auto;">
-          <table class="data-table">
-            <thead>
-              <tr><th>排名</th><th>失败原因</th><th>次数</th><th>占比（B 路径）</th>
-                ${cs ? '<th>vs ' + COMPARE_LABEL + '</th>' : ''}
-              </tr>
-            </thead>
-            <tbody>${bReasons.map(bRow).join("")}</tbody>
-          </table>
-        </div>
+        <div class="chart-title">🎯 B 路径 环节汇总（哪一环出问题？）</div>
+        ${stageSummaryHtml(bStages, "B", CURRENT_DATA.summary.B)}
+      </div>
+      <div class="chart-box" style="margin-top:14px">
+        <div class="chart-title">📋 B 路径 失败根因 Top 30（族级，按环节色编码）</div>
+        <table class="data-table">
+          <thead>
+            <tr><th>排名</th><th>族名</th><th>单数</th><th>占比（B 路径）</th>
+              ${cs ? '<th>vs ' + COMPARE_LABEL + '</th>' : ''}
+            </tr>
+          </thead>
+          <tbody id="bFamilyTbody">${bFamilies.map(bFamilyRow).join("")}</tbody>
+        </table>
       </div>
     </div>
 
     <div class="section">
-      <div class="section-title">🚨 D 路径失败原因（票未出完 · ${fmt.num(CURRENT_DATA.summary.D)} 单）
+      <div class="section-title">🚨 D 路径失败根因（按出票环节 · ${fmt.num(CURRENT_DATA.summary.D)} 单）
         ${cmpDHdr}
       </div>
-      <div id="chart-failD" class="chart-area" style="height:480px"></div>
       <div class="chart-box" style="margin-top:14px">
-        <div class="chart-title">📋 D 路径 Top 15 失败原因</div>
+        <div class="chart-title">🎯 D 路径 环节汇总（哪一环出问题？）</div>
+        ${stageSummaryHtml(dStages, "D", CURRENT_DATA.summary.D)}
+      </div>
+      <div class="chart-box" style="margin-top:14px">
+        <div class="chart-title">📋 D 路径 失败根因 Top 30（族级，按环节色编码）</div>
         <table class="data-table">
           <thead>
-            <tr><th>排名</th><th>失败原因</th><th>次数</th><th>占比（D 路径）</th>
+            <tr><th>排名</th><th>族名</th><th>单数</th><th>占比（D 路径）</th>
               ${cs ? '<th>vs ' + COMPARE_LABEL + '</th>' : ''}
             </tr>
           </thead>
-          <tbody>${dReasons.map(dRow).join("")}</tbody>
+          <tbody id="dFamilyTbody">${dFamilies.map(dFamilyRow).join("")}</tbody>
         </table>
       </div>
     </div>
@@ -1780,6 +1933,364 @@ function renderFail() {
         formatter: p => fmt.num(p.value) },
     }],
   });
+}
+
+/* ============== 失败根因下钻面板 ============== */
+let currentDrillKey = null;  // 当前展开的下钻，格式 "B-3" 或 "D-5"
+let currentFamilyKey = null; // 当前展开的族，格式 "fam-B-0"
+
+// 复用：把 reason 归到族（与 gen_dashboard_data.py family_reason 保持一致）
+const FAMILY_RULES_JS = [
+  [/取票失败/, "取票失败"],
+  [/反采同程.*询价失败/, "反采同程 - 询价失败"],
+  [/反采同程.*询价/, "反采同程 - 询价异常"],
+  [/反采携程海外.*询价失败/, "反采携程海外 - 询价失败"],
+  [/反采携程海外.*询价/, "反采携程海外 - 询价异常"],
+  [/航班管家.*询价失败/, "航班管家 - 询价失败"],
+  [/航班管家.*询价/, "航班管家 - 询价异常"],
+  [/.+询价失败/, "其他渠道 - 询价失败"],
+  [/反采同程.*亏损大于/, "反采同程 - 政策亏损过大"],
+  [/反采携程海外.*亏损大于/, "反采携程海外 - 政策亏损过大"],
+  [/反采同程.*亏损/, "反采同程 - 政策亏损"],
+  [/反采携程海外.*亏损/, "反采携程海外 - 政策亏损"],
+  [/.+亏损大于/, "其他渠道 - 政策亏损过大"],
+  [/^支付失败/, "支付失败"],
+  [/^原平台状态/, "原平台状态检测失败"],
+  [/预定失败.*内部程序异常/, "预定失败 - 内部程序异常"],
+  [/辅营/, "辅营订单处理"],
+  [/证件|乘客信息|实名/, "证件/乘客信息异常"],
+];
+function reasonToFamily(reason) {
+  if (!reason) return "";
+  for (const [re, fam] of FAMILY_RULES_JS) {
+    if (re.test(reason)) return fam;
+  }
+  return reason;
+}
+
+// 族级展开：显示该族下所有原始原因（清洗后但未族聚合）
+function toggleFamilyDrill(path, famIdx, rowEl) {
+  const key = `fam-${path}-${famIdx}`;
+  if (currentFamilyKey === key) {
+    collapseFamilyDrill();
+    return;
+  }
+  collapseFamilyDrill();
+  collapseDrill();
+  const families = path === "B" ? (CURRENT_DATA.fail_families_B || []) : (CURRENT_DATA.fail_families_D || []);
+  const allReasons = path === "B" ? (CURRENT_DATA.fail_reasons_B || []) : (CURRENT_DATA.fail_reasons_D || []);
+  const fam = families[famIdx];
+  if (!fam) return;
+  currentFamilyKey = key;
+
+  // 找出该族下所有原始原因（用 reasonToFamily 匹配）
+  const reasons = allReasons.filter(r => reasonToFamily(r.full) === fam.family);
+
+  // 在族行下方插入二级面板
+  const colspan = 5;
+  const tr = rowEl;
+  const newTr = document.createElement("tr");
+  newTr.id = "family-drill-row";
+  newTr.classList.add("drill-row");
+  // 标题栏 + 关闭按钮 + 原始原因表格 + 5 维度钻取按钮
+  newTr.innerHTML = `<td colspan="${colspan}" style="padding:0; background:#0a1424">
+    <div class="drill-panel">
+      <div class="drill-header">
+        <div class="drill-title">
+          <span style="color:#00e5ff">▾ ${escapeHtml(fam.family)}</span>
+          <span class="badge badge-info" style="margin-left:8px">共 ${fmt.num(fam.count)} 单</span>
+          <span class="badge badge-warn" style="margin-left:4px">包含 ${reasons.length} 个原始根因</span>
+        </div>
+        <button class="drill-close" onclick="collapseFamilyDrill()">收起 ✕</button>
+      </div>
+      <div class="family-subtable">
+        <table class="data-table">
+          <thead>
+            <tr><th style="width:50px">#</th><th>原始根因（清洗后）</th><th>单数</th><th>占比</th><th>钻取</th></tr>
+          </thead>
+          <tbody>
+            ${reasons.slice(0, 5).map((r, i) => `
+              <tr>
+                <td>${i + 1}</td>
+                <td title="${escapeHtml(r.full)}">${escapeHtml(r.reason)}</td>
+                <td>${fmt.num(r.count)}</td>
+                <td>${fmt.pct(r.count / fam.count * 100)}</td>
+                <td>
+                  <button class="drill-btn" onclick="toggleDrill('${path}', ${allReasons.indexOf(r)}, this.closest('tr'))">5 维度下钻 ▾</button>
+                </td>
+              </tr>
+            `).join("")}
+            ${reasons.length > 5 ? `<tr><td colspan="5" style="color:#7a8ba0;text-align:center">+ ${reasons.length - 5} 个其他原始根因（已隐藏）</td></tr>` : ""}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  tr.parentNode.insertBefore(newTr, tr.nextSibling);
+}
+
+function collapseFamilyDrill() {
+  const el = document.getElementById("family-drill-row");
+  if (el) el.remove();
+  currentFamilyKey = null;
+}
+
+function toggleDrill(path, idx, rowEl) {
+  const key = `${path}-${idx}`;
+  // 同一个面板再次点击：收起
+  if (currentDrillKey === key) {
+    collapseDrill();
+    return;
+  }
+  // 收起旧的，展开新的
+  collapseDrill();
+  const drillData = (path === "B" ? CURRENT_DATA.fail_drill_B : CURRENT_DATA.fail_drill_D) || [];
+  const d = drillData[idx];
+  if (!d) return;
+  currentDrillKey = key;
+
+  // 在表格行下方插入下钻面板
+  const tr = rowEl;
+  const colspan = 5;
+  const newTr = document.createElement("tr");
+  newTr.id = "drill-row";
+  newTr.classList.add("drill-row");
+  newTr.innerHTML = `<td colspan="${colspan}" style="padding:0; background:#0a1424">
+    <div class="drill-panel">
+      <div class="drill-header">
+        <div class="drill-title">
+          <span style="color:#00e5ff">▾ ${escapeHtml(d.reason)}</span>
+          <span class="badge badge-info" style="margin-left:8px">${fmt.num(d.total)} 单</span>
+          <span class="badge badge-warn" style="margin-left:4px">救回 ${fmt.num(d.rescued_count)} 单（${d.rescue_rate}%）</span>
+        </div>
+        <button class="drill-close" onclick="collapseDrill()">收起 ✕</button>
+      </div>
+      <div class="drill-grid">
+        <div class="drill-chart">
+          <div class="drill-chart-title">📱 平台分布 Top 10</div>
+          <div id="drill-${key}-plat" style="height:280px"></div>
+        </div>
+        <div class="drill-chart">
+          <div class="drill-chart-title">✈️ 航司分布 Top 10</div>
+          <div id="drill-${key}-air" style="height:280px"></div>
+        </div>
+        <div class="drill-chart drill-wide">
+          <div class="drill-chart-title">🔥 航司 × 平台 交叉热力图</div>
+          <div id="drill-${key}-cross" style="height:340px"></div>
+        </div>
+        <div class="drill-chart">
+          <div class="drill-chart-title">📅 日期趋势</div>
+          <div id="drill-${key}-date" style="height:240px"></div>
+        </div>
+        <div class="drill-chart">
+          <div class="drill-chart-title">👤 员工救场 Top 10</div>
+          <div id="drill-${key}-staff" style="height:240px"></div>
+        </div>
+      </div>
+    </div>
+  `;
+  tr.parentNode.insertBefore(newTr, tr.nextSibling);
+
+  // 渲染 5 个图表
+  setTimeout(() => {
+    renderDrillCharts(key, d);
+  }, 50);
+}
+
+function collapseDrill() {
+  const el = document.getElementById("drill-row");
+  if (el) el.remove();
+  currentDrillKey = null;
+}
+
+function renderDrillCharts(key, d) {
+  // 1. 平台分布（横向柱）
+  if (d.platform_dist && d.platform_dist.length) {
+    createChart(`drill-${key}-plat`, {
+      ...baseEchartsOpt,
+      grid: { left: 90, right: 30, top: 10, bottom: 25 },
+      tooltip: { ...baseEchartsOpt.tooltip, trigger: "axis", axisPointer: { type: "shadow" } },
+      xAxis: { type: "value", axisLabel: { color: "#b0c4de", fontSize: 10 } },
+      yAxis: { type: "category", data: d.platform_dist.map(x => x.name).reverse(), axisLabel: { color: "#b0c4de", fontSize: 10 } },
+      series: [{
+        type: "bar",
+        data: d.platform_dist.map(x => x.count).reverse(),
+        itemStyle: { color: "#00e5ff" },
+        label: { show: true, position: "right", color: "#00e5ff", fontSize: 10, formatter: "{c}" },
+      }],
+    });
+  }
+  // 2. 航司分布
+  if (d.airline_dist && d.airline_dist.length) {
+    createChart(`drill-${key}-air`, {
+      ...baseEchartsOpt,
+      grid: { left: 90, right: 30, top: 10, bottom: 25 },
+      tooltip: { ...baseEchartsOpt.tooltip, trigger: "axis", axisPointer: { type: "shadow" } },
+      xAxis: { type: "value", axisLabel: { color: "#b0c4de", fontSize: 10 } },
+      yAxis: { type: "category", data: d.airline_dist.map(x => x.name).reverse(), axisLabel: { color: "#b0c4de", fontSize: 10 } },
+      series: [{
+        type: "bar",
+        data: d.airline_dist.map(x => x.count).reverse(),
+        itemStyle: { color: "#ff9f43" },
+        label: { show: true, position: "right", color: "#ff9f43", fontSize: 10, formatter: "{c}" },
+      }],
+    });
+  }
+  // 3. 航司 × 平台 交叉图
+  // 根据维度数动态选图表：
+  //   双方都 ≥ 2  → 热力图（标准）
+  //   一方只有 1  → 横向条形图（避免 1×N 长条）
+  if (d.cross && d.cross.airlines && d.cross.airlines.length && d.cross.platforms && d.cross.platforms.length) {
+    const nAir = d.cross.airlines.length;
+    const nPlat = d.cross.platforms.length;
+    // 汇总：每个 (airline, platform) 的单数
+    const pairs = [];
+    d.cross.airlines.forEach((a, i) => {
+      d.cross.platforms.forEach((p, j) => {
+        const v = d.cross.data[i][j];
+        if (v > 0) pairs.push({ airline: a, platform: p, count: v });
+      });
+    });
+    pairs.sort((x, y) => y.count - x.count);
+
+    if (nAir >= 2 && nPlat >= 2) {
+      // 标准热力图
+      const heatData = [];
+      d.cross.airlines.forEach((a, i) => {
+        d.cross.platforms.forEach((p, j) => {
+          heatData.push([j, i, d.cross.data[i][j]]);
+        });
+      });
+      createChart(`drill-${key}-cross`, {
+        ...baseEchartsOpt,
+        tooltip: {
+          position: "top",
+          formatter: (p) => {
+            const airline = d.cross.airlines[p.value[1]];
+            const platform = d.cross.platforms[p.value[0]];
+            return `${airline} × ${platform}<br/><b>${p.value[2]}</b> 单`;
+          },
+        },
+        grid: { left: 80, right: 30, top: 20, bottom: 60 },
+        xAxis: {
+          type: "category",
+          data: d.cross.platforms,
+          axisLabel: { color: "#b0c4de", fontSize: 10, rotate: 30, interval: 0 },
+          splitArea: { show: true },
+        },
+        yAxis: {
+          type: "category",
+          data: d.cross.airlines,
+          axisLabel: { color: "#b0c4de", fontSize: 10 },
+          splitArea: { show: true },
+        },
+        visualMap: {
+          min: 0,
+          max: Math.max(...heatData.map(h => h[2])),
+          calculable: true,
+          orient: "horizontal",
+          left: "center",
+          bottom: 5,
+          textStyle: { color: "#b0c4de", fontSize: 10 },
+          inRange: { color: ["#0a1a2e", "#1e3a5f", "#00e5ff", "#ff4757"] },
+        },
+        series: [{
+          name: "失败单数",
+          type: "heatmap",
+          data: heatData,
+          label: {
+            show: true,
+            color: "#fff",
+            fontSize: 10,
+            formatter: (p) => p.value[2] > 0 ? p.value[2] : "",
+          },
+          emphasis: { itemStyle: { shadowBlur: 10, shadowColor: "rgba(0,229,255,0.5)" } },
+        }],
+      });
+    } else {
+      // 1×N 或 N×1：横向条形图，按 (airline × platform) 组合排序
+      const labels = pairs.map(p => `${p.airline} × ${p.platform}`);
+      const data = pairs.map(p => p.count);
+      createChart(`drill-${key}-cross`, {
+        ...baseEchartsOpt,
+        tooltip: {
+          ...baseEchartsOpt.tooltip,
+          trigger: "axis",
+          axisPointer: { type: "shadow" },
+          formatter: (params) => {
+            const p = params[0];
+            const pair = pairs[p.dataIndex];
+            return `${pair.airline} × ${pair.platform}<br/><b>${p.value}</b> 单`;
+          },
+        },
+        grid: { left: 140, right: 30, top: 30, bottom: 30 },
+        xAxis: { type: "value", axisLabel: { color: "#b0c4de", fontSize: 10 } },
+        yAxis: {
+          type: "category",
+          data: labels.slice().reverse(),
+          axisLabel: { color: "#b0c4de", fontSize: 10 },
+        },
+        series: [{
+          type: "bar",
+          data: data.slice().reverse(),
+          itemStyle: {
+            color: (params) => {
+              const pair = pairs[data.length - 1 - params.dataIndex];
+              return pair.count > d.total * 0.5 ? "#ff4757" : pair.count > d.total * 0.2 ? "#ff9f43" : "#00e5ff";
+            },
+            borderRadius: [0, 4, 4, 0],
+          },
+          label: {
+            show: true,
+            position: "right",
+            color: "#fff",
+            fontSize: 11,
+            fontWeight: "bold",
+            formatter: "{c}",
+          },
+          emphasis: { itemStyle: { shadowBlur: 10, shadowColor: "rgba(0,229,255,0.5)" } },
+        }],
+      });
+    }
+  }
+  // 4. 日期趋势
+  if (d.date_trend && d.date_trend.length) {
+    createChart(`drill-${key}-date`, {
+      ...baseEchartsOpt,
+      grid: { left: 50, right: 20, top: 20, bottom: 50 },
+      tooltip: { ...baseEchartsOpt.tooltip, trigger: "axis" },
+      xAxis: { type: "category", data: d.date_trend.map(x => x.date.slice(5)), axisLabel: { color: "#b0c4de", fontSize: 9, rotate: 30 } },
+      yAxis: { type: "value", axisLabel: { color: "#b0c4de", fontSize: 10 } },
+      series: [{
+        type: "line",
+        data: d.date_trend.map(x => x.count),
+        smooth: true,
+        itemStyle: { color: "#00e5ff" },
+        lineStyle: { color: "#00e5ff", width: 2 },
+        areaStyle: { color: "rgba(0,229,255,0.15)" },
+      }],
+    });
+  }
+  // 5. 员工救场
+  if (d.staff_dist && d.staff_dist.length) {
+    createChart(`drill-${key}-staff`, {
+      ...baseEchartsOpt,
+      grid: { left: 70, right: 20, top: 10, bottom: 25 },
+      tooltip: { ...baseEchartsOpt.tooltip, trigger: "axis", axisPointer: { type: "shadow" } },
+      xAxis: { type: "value", axisLabel: { color: "#b0c4de", fontSize: 10 } },
+      yAxis: { type: "category", data: d.staff_dist.map(x => x.name).reverse(), axisLabel: { color: "#b0c4de", fontSize: 10 } },
+      series: [{
+        type: "bar",
+        data: d.staff_dist.map(x => x.count).reverse(),
+        itemStyle: { color: "#00ff88" },
+        label: { show: true, position: "right", color: "#00ff88", fontSize: 10, formatter: "{c}" },
+      }],
+    });
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 }
 
 /* ============== 路由 ============== */
