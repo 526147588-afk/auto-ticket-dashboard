@@ -2101,9 +2101,52 @@ function renderFailureAnalysis() {
 /* ============== 失败根因下钻面板 ============== */
 let currentDrillKey = null;  // 当前展开的下钻，格式 "B-3" 或 "D-5"
 let currentFamilyKey = null; // 当前展开的族，格式 "fam-B-0"
+let currentFamilyExpanded = false; // 当前族展开是否显示全部 reason（默认 Top 20）
 
-// v11：复用 getFamily（同一套规则源，避免重复维护）
-// 老逻辑：const FAMILY_RULES_JS = [...]; function reasonToFamily() {...} —— 已废弃（与 getFamily 重复，且用的是 v9 老规则）
+// 族展开里的 reason 表格渲染（v12 拆出来单独函数，支持"展开全部"切换）
+function renderFamilyReasonRows(reasons, allReasons, path, fam, expanded) {
+  const shown = expanded ? reasons : reasons.slice(0, 20);
+  const rows = shown.map((r, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td title="${escapeHtml(r.full)}">${escapeHtml(r.reason)}</td>
+      <td>${fmt.num(r.count)}</td>
+      <td>${fmt.pct(r.count / fam.count * 100)}</td>
+      <td>
+        <button class="drill-btn" onclick="toggleDrill('${path}', ${allReasons.indexOf(r)}, this.closest('tr'))">5 维度下钻 ▾</button>
+      </td>
+    </tr>
+  `).join("");
+  // 底部按钮：展开全部 / 收起回 Top 20
+  const expandBtn = reasons.length > 20 ? `
+    <tr>
+      <td colspan="5" style="text-align:center;padding:10px">
+        <button class="drill-btn" onclick="toggleExpandFamily()" style="min-width:200px">
+          ${expanded ? `▲ 收起（仅显示前 20 条）` : `▼ 展开全部 ${reasons.length} 条`}
+        </button>
+      </td>
+    </tr>
+  ` : "";
+  return rows + expandBtn;
+}
+
+// 切换"展开全部 / 收起"按钮的回调（重新渲染 tbody）
+function toggleExpandFamily() {
+  currentFamilyExpanded = !currentFamilyExpanded;
+  // 找当前族展开面板的 tbody，替换 innerHTML
+  const panel = document.querySelector("#family-drill-row .family-subtable tbody");
+  if (!panel) return;
+  // 从 DOM 上读出当前族的 path 和 idx（用 currentFamilyKey 解析）
+  const key = currentFamilyKey; // 形如 "fam-B-3"
+  const m = key && key.match(/^fam-([BD])-(\d+)$/);
+  if (!m) return;
+  const path = m[1], famIdx = parseInt(m[2]);
+  const families = path === "B" ? (CURRENT_DATA.fail_families_B || []) : (CURRENT_DATA.fail_families_D || []);
+  const allReasons = path === "B" ? (CURRENT_DATA.fail_reasons_B || []) : (CURRENT_DATA.fail_reasons_D || []);
+  const fam = families[famIdx];
+  const reasons = allReasons.filter(r => r.family === fam.family);
+  panel.innerHTML = renderFamilyReasonRows(reasons, allReasons, path, fam, currentFamilyExpanded);
+}
 
 // 族级展开：显示该族下所有原始原因（清洗后但未族聚合）
 function toggleFamilyDrill(path, famIdx, rowEl) {
@@ -2119,6 +2162,7 @@ function toggleFamilyDrill(path, famIdx, rowEl) {
   const fam = families[famIdx];
   if (!fam) return;
   currentFamilyKey = key;
+  currentFamilyExpanded = false; // 默认折叠状态
 
   // v12 优化：直接读 r.family（后端预计算好的），不再每次调 getFamily
   // 之前 B 路径 1526 项 × 37 条正则 = 5.6 万次正则匹配 → 点族行卡顿
@@ -2147,18 +2191,7 @@ function toggleFamilyDrill(path, famIdx, rowEl) {
             <tr><th style="width:50px">#</th><th>原始根因（清洗后）</th><th>单数</th><th>占比</th><th>钻取</th></tr>
           </thead>
           <tbody>
-            ${reasons.slice(0, 5).map((r, i) => `
-              <tr>
-                <td>${i + 1}</td>
-                <td title="${escapeHtml(r.full)}">${escapeHtml(r.reason)}</td>
-                <td>${fmt.num(r.count)}</td>
-                <td>${fmt.pct(r.count / fam.count * 100)}</td>
-                <td>
-                  <button class="drill-btn" onclick="toggleDrill('${path}', ${allReasons.indexOf(r)}, this.closest('tr'))">5 维度下钻 ▾</button>
-                </td>
-              </tr>
-            `).join("")}
-            ${reasons.length > 5 ? `<tr><td colspan="5" style="color:#7a8ba0;text-align:center">+ ${reasons.length - 5} 个其他原始根因（已隐藏）</td></tr>` : ""}
+            ${renderFamilyReasonRows(reasons, allReasons, path, fam, currentFamilyExpanded)}
           </tbody>
         </table>
       </div>
@@ -2171,6 +2204,7 @@ function collapseFamilyDrill() {
   const el = document.getElementById("family-drill-row");
   if (el) el.remove();
   currentFamilyKey = null;
+  currentFamilyExpanded = false;
 }
 
 function toggleDrill(path, idx, rowEl) {
