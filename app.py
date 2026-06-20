@@ -65,7 +65,7 @@ else:
 import base64
 b64 = base64.b64encode(html.encode("utf-8")).decode("ascii")
 data_uri = f"data:text/html;base64,{b64}"
-st.iframe(data_uri, height=5000, scrolling=True)
+st.iframe(data_uri, height=5000)
 
 # ============== 6. 底部状态条（可选，方便排查） ==============
 try:
