@@ -42,31 +42,24 @@ with open(HTML_FILE, "r", encoding="utf-8") as f:
     html = f.read()
 
 # ============== 4. 注入数据到 HTML（核心） ==============
-# HTML 里的 loadData() 会优先读 window.__DASHBOARD_DATA__
-# 用 JSON 序列化 + </script> 防御，避免 HTML 解析出错
 safe_data = (
     data_text
-    .replace("</script>", "<\\/script>")   # 防止 JSON 里的 </script> 提前闭合
-    .replace("<!--", "<\\!--")              # 防止 HTML 注释闭合
+    .replace("</script>", "<\\/script>")
+    .replace("<!--", "<\\!--")
 )
 
-# 在 <head> 末尾注入 window.__DASHBOARD_DATA__
 injection = f"<script>window.__DASHBOARD_DATA__ = {safe_data};</script>"
 if "</head>" in html:
     html = html.replace("</head>", injection + "</head>", 1)
 else:
-    # 兜底：插到 <body> 开头
     html = html.replace("<body>", "<body>" + injection, 1)
 
-# ============== 5. 渲染（关键：保真 + 撑满容器） ==============
-# 用 components.v1.html 保留 style/JS（st.html 会过滤 <style> 标签，CSS 全丢）
-# height 给个够大的值（5000），scrolling=True 让内容超出时 iframe 内部出滚动条
-# （不靠 streamlit 主页面滚动，避免双滚动条冲突）
-b64 = base64.b64encode(html.encode("utf-8")).decode("ascii")
-data_uri = f"data:text/html;base64,{b64}"
+# ============== 5. 渲染 ==============
+# streamlit 1.58 的 st.iframe 自动检测 src 类型：
+# 不以 http/https/data 开头、不以 / 开头、不是文件路径 → 当 HTML 字符串，用 srcdoc 嵌入
 st.iframe(html, height=5000)
 
-# ============== 6. 底部状态条（可选，方便排查） ==============
+# ============== 6. 底部状态条 ==============
 try:
     data = json.loads(data_text)
     months = data.get("available_months", [])
