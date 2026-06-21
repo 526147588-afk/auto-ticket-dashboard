@@ -558,6 +558,8 @@ FAMILY_SUB_NORMALIZE_RULES = {
         (r"::\s*[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", ""),
         # Jackson 错误细节："Number Array Object or token '' 'true' or 'false') at [Source: ..."
         (r"\s*Number\s*Array\s*Object\s*or\s*token[^\n]*", ""),
+        # 末尾 ": " 删空
+        (r"[:：]\s*$", ""),
     ],
 
     # === 系统环节 - 订单处理超时族 ===
@@ -604,6 +606,17 @@ FAMILY_SUB_NORMALIZE_RULES = {
         (r"argument\s+\"[^\"]+\"\s+is[^,，:：]*", ""),
         # "开卡成功 查询详情失败 卡号: 原因:..." 删空
         (r"开卡成功\s*查询详情失败\s*卡号[:：]\s*[^,，:：]*", ""),
+        # Dubbo 错误详细："Failed to invoke the method in the service com.xxx Tried 3 times of the providers [] (1/1) from the registry on the consumer using the dubbo version 3.2.10. Last error is: Invoke remote method timeout. method: provider: service cause: Timeout after 3000ms waiting for result"
+        # IP/端口 已被全局骨架归一器吃掉，剩余归一
+        (r"Failed to invoke the method in the service\s+[\w.]+\s+Tried\s+\d+\s+times\s+of\s+the\s+providers\s+\[\]\s*\(\d+/\d+\)\s+from\s+the\s+registry[^,，：:]*", "Dubbo 调用超时"),
+        (r"on the consumer using the dubbo version[^\n,，；;。]*", ""),
+        (r"Last error is:\s*Invoke remote method timeout\.[^\n,，；;。]*", "Dubbo 调用超时"),
+        (r"method:\s*provider:\s*service\s*cause:\s*[^,，；;。\n]*", ""),
+        # Jackson 错误："Number Array Object or token 'true' or 'false') at [Source: ..."
+        (r"Number\s*Array\s*Object\s*or\s*token[^\n,，；;。]*", ""),
+        (r"\)\s*at\s*\[Source:[^\n,，；;。]*line:\s*\d+\s*column:\s*\d+\]?", ""),
+        # 单纯 IP 残留
+        (r"^\s*[\w\-]+\s*$", ""),
     ],
 
     # === 其他失败 - 空原因族 ===
@@ -652,6 +665,8 @@ FAMILY_SUB_NORMALIZE_RULES = {
         # 5 变体 13 单："补抓单订单转人工" / "处理订单: 有处理器执行异常转人工 原因列表:[:java.lang.Exception: 锁单失败 订单状态异常 请谨慎处理!]" / "[:cn.hutool.core.io.: : elephant.xiangshangsl.com]" / "[:cn.hutool.http.: Read timed out]"
         # 归一为 "补抓单订单转人工"（按触发时机同族）
         (r"^处理订单[:：]\s*有处理器执行异常转人工\s*原因列表[:：]\[?", "补抓单订单转人工 "),
+        # 详细错误 [error] 整段删空
+        (r"\s*[:：][a-zA-Z0-9_.]+(?::\s*[^,，；;。\]]+)?\]?\s*$", ""),
     ],
 
     # === 预定失败 - 询价失败-其他渠道族 ===
@@ -1067,6 +1082,9 @@ def build_month_data(df, month_label):
         # 族内二级归一：把同一族内的"业务子描述变体"统一成占位符
         # 关键约束：只能族内合并，不能跨族
         cleaned = family_sub_normalize(cleaned, fam)
+        # 族内归一后可能变空字符串（删空了所有子描述），fallback 到 "(无)"
+        if not cleaned or not cleaned.strip():
+            cleaned = "(无)"
         if p == "B":
             fail_reasons_b[cleaned] += 1
             fail_families_b[fam] += 1
