@@ -833,18 +833,20 @@ FAMILY_SUB_NORMALIZE_RULES = {
 
 
 def family_sub_normalize(reason: str, family: str) -> str:
-    """族内二级归一：在 family 内把相似的"业务子描述"归一为占位符。
-    
-    关键约束：只能在同一族内归一，不能跨族合并。
-    例如：「预定失败-询价异常-反采同程」族内的"不足"/"没有匹配"等子描述归一，
-    但不能把「取票失败-ip异常」和「预定失败-ip异常」合并（不同族）。
+    """族内二级归一：v10.5（2026-06-22）起禁用 — 保留变体原始信息。
+
+    用户原话：「需要保留原始信息，只提取原始信息中相似的字样进行合并」。
+
+    含义：
+    - 族聚合（REASON_FAMILY_RULES）已经把"相似的字样"归到同一族（如"预定失败-预定异常"），
+      这是用户要的"合并"。
+    - 族内的具体变体（如"预定失败 原因为:反采同程" / "预定失败 原因为:内部程序异常 反采同程"）
+      要保留原始 cleaned 文本，让业务能看清全貌。
+
+    之前的 v8/v9/v9.1/v10 把族内变体也"激进删除/合并"是理解错了方向，
+    本函数现直接返回原 cleaned，不做任何族内归一。
     """
-    if not family or family not in FAMILY_SUB_NORMALIZE_RULES:
-        return reason
-    rules = FAMILY_SUB_NORMALIZE_RULES[family]
-    for pattern, replacement in rules:
-        reason = re.sub(pattern, replacement, reason)
-    return reason
+    return reason.strip()
 
 
 def load_all():
