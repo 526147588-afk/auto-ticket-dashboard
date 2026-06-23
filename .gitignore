@@ -4,6 +4,8 @@ preview_*.png
 *.log
 _*.txt
 _*.py
+_*.png
+_*.out
 update_dashboard.*
 analyze_*.py
 check_*.py
