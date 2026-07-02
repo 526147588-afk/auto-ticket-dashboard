@@ -142,11 +142,14 @@ def parse_gen_output(stdout):
     return kpi
 
 
-def run_gen():
+def run_gen(force=False):
     """跑 gen_dashboard_data.py，捕获输出"""
     print(f"[update_data] 跑 gen_dashboard_data.py ...")
+    cmd = f"python \"{GEN_SCRIPT}\" --month all"
+    if force:
+        cmd += " --force"
     rc, out, err = run_cmd(
-        f"python \"{GEN_SCRIPT}\" --month all",
+        cmd,
         timeout=600  # 10 分钟超时
     )
     return rc, out, err
@@ -200,8 +203,11 @@ def format_success_message(kpi, commit_msg):
 
 
 def main():
+    import sys as _sys
+    force_mode = "--force" in _sys.argv
     print("=" * 60)
-    print(f"[update_data] 启动 {datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"[update_data] 启动 {datetime.now(BJ_TZ).strftime('%Y-%m-%d %H:%M:%S')}"
+          f"{'  [--force 模式]' if force_mode else ''}")
     print("=" * 60)
 
     # 1. 检查环境
@@ -217,7 +223,7 @@ def main():
 
     # 2. 跑 gen
     print("[2/3] 跑数据生成 ...")
-    rc, out, err = run_gen()
+    rc, out, err = run_gen(force=force_mode)
     if rc != 0:
         msg = f"gen_dashboard_data.py 失败（退出码 {rc}）\n\n" + (err[-500:] if err else out[-500:])
         show_result("数据生成失败", msg, is_error=True)
