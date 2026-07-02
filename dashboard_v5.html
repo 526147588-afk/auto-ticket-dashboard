@@ -2079,23 +2079,33 @@ let currentFamilyKey = null; // 当前展开的族，格式 "fam-B-0"
 let currentFamilyExpanded = false; // 当前族展开是否显示全部 reason（默认 Top 20）
 
 // 族展开里的 reason 表格渲染（v12 拆出来单独函数，支持"展开全部"切换）
+// v10.14.5（2026-07-02）：加 vs 上月对比列（用 prev_count 字段）
 function renderFamilyReasonRows(reasons, allReasons, path, fam, expanded) {
   const shown = expanded ? reasons : reasons.slice(0, 20);
-  const rows = shown.map((r, i) => `
+  const rows = shown.map((r, i) => {
+    const prev = r.prev_count || 0;
+    const diff = r.count - prev;
+    const diffSign = diff > 0 ? "+" : (diff < 0 ? "" : "±");
+    const diffColor = diff > 0 ? "#00d4aa" : (diff < 0 ? "#ff4757" : "#7a8ba0");
+    const diffArrow = diff > 0 ? "↑" : (diff < 0 ? "↓" : "→");
+    const prevLabel = r.prev_month ? r.prev_month : "上月";
+    return `
     <tr>
       <td>${i + 1}</td>
       <td title="${escapeHtml(r.full)}">${escapeHtml(r.reason)}</td>
       <td>${fmt.num(r.count)}</td>
       <td>${fmt.pct(r.count / fam.count * 100)}</td>
+      <td style="color:${diffColor}">${diffArrow} ${diffSign}${fmt.num(diff)}</td>
+      <td style="color:#7a8ba0">${fmt.num(prev)} <span style="font-size:10px">(${prevLabel})</span></td>
       <td>
         <button class="drill-btn" onclick="toggleDrill('${path}', ${allReasons.indexOf(r)}, this.closest('tr'))">5 维度下钻 ▾</button>
       </td>
     </tr>
-  `).join("");
+  `}).join("");
   // 底部按钮：展开全部 / 收起回 Top 20
   const expandBtn = reasons.length > 20 ? `
     <tr>
-      <td colspan="5" style="text-align:center;padding:10px">
+      <td colspan="7" style="text-align:center;padding:10px">
         <button class="drill-btn" onclick="toggleExpandFamily()" style="min-width:200px">
           ${expanded ? `▲ 收起（仅显示前 20 条）` : `▼ 展开全部 ${reasons.length} 条`}
         </button>
@@ -2163,7 +2173,7 @@ function toggleFamilyDrill(path, famIdx, rowEl) {
       <div class="family-subtable">
         <table class="data-table">
           <thead>
-            <tr><th style="width:50px">#</th><th>原始根因（清洗后）</th><th>单数</th><th>占比</th><th>钻取</th></tr>
+            <tr><th style="width:50px">#</th><th>原始根因（清洗后）</th><th>单数</th><th>占比</th><th>vs 上月</th><th>上月单数</th><th>钻取</th></tr>
           </thead>
           <tbody>
             ${renderFamilyReasonRows(reasons, allReasons, path, fam, currentFamilyExpanded)}

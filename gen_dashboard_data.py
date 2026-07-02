@@ -1648,6 +1648,29 @@ def main():
     bj_tz = timezone(timedelta(hours=8))
     generated_at = datetime.now(bj_tz).strftime("%Y-%m-%d %H:%M:%S")
 
+    # v10.14.5（2026-07-02）：给 fail_reasons_B / D 加 prev_count + prev_month 字段
+    # 让 dashboard 展开族时能在"原始根因"列表里显示"vs 上月"对比
+    for i, m in enumerate(target_months):
+        if i == 0:
+            # 第一个月没有 prev，所有项 prev_count = 0
+            for r in months_data[m].get('fail_reasons_B', []):
+                r['prev_count'] = 0
+                r['prev_month'] = None
+            for r in months_data[m].get('fail_reasons_D', []):
+                r['prev_count'] = 0
+                r['prev_month'] = None
+            continue
+        prev_m = target_months[i - 1]
+        prev_data = months_data[prev_m]
+        prev_b = {r['reason']: r['count'] for r in prev_data.get('fail_reasons_B', [])}
+        prev_d = {r['reason']: r['count'] for r in prev_data.get('fail_reasons_D', [])}
+        for r in months_data[m].get('fail_reasons_B', []):
+            r['prev_count'] = prev_b.get(r['reason'], 0)
+            r['prev_month'] = prev_m
+        for r in months_data[m].get('fail_reasons_D', []):
+            r['prev_count'] = prev_d.get(r['reason'], 0)
+            r['prev_month'] = prev_m
+
     # Step A：每月的聚合数据写到 monthly/{month}.json
     monthly_index = {}
     for m, data in months_data.items():
